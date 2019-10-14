@@ -20,7 +20,7 @@
 *.mod
 *.smod
 
-# Compiled Static libraries
+# Compiled Static librariesp
 *.lai
 *.la
 *.a
@@ -31,3 +31,5 @@
 *.out
 *.app
 *.pdf
+*.docx
+*.doc
