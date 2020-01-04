@@ -1,3 +1,5 @@
+# 0. 基础知识
+
 ## 0.1 一个Linux程序的诞生
 
 ```c++
@@ -136,6 +138,8 @@ strace ./hello_world
 
 这里的同步与非同步，也是指I/O操作。当把阻塞、非阻塞、同步和非同步放在一起时，不免会让人眼花缭乱。同步是否就是阻塞，非同步是否就是非阻塞呢？实际上在I/O操作中，它们是不同的概念。同步既可以是阻塞的，也可以是非阻塞的，而常用的Linux的I/O调用实际上都是同步的。这里的同步和非同步，是指I/O数据的复制工作是否同步执行。以系统调用read为例。阻塞的read会一直陷入内核态直到read返回；而非阻塞的read在数据未准备好的情况下，会直接返回错误，而当有数据时，非阻塞的read同样会一直陷入内核态，直到read完成。这个read就是同步的操作，即I/O的完成是在当前执行流程下同步完成的。如果是非同步即异步，则I/O操作不是随系统调用同步完成的。调用返回后，I/O操作并没有完成，而是由操作系统或者某个线程负责真正的I/O操作，等完成后通知原来的线程。
 
+# 1. 文件IO
+
 ## 1.1.1 文件、文件描述符和文件表
 
 Linux内核**将一切都视为文件**，在Linux中，文件既可以是传统上的物理文件，也可以是设备、管道甚至一块内存。这些文件**利用VFS机制，以文件系统的形式挂载在Linux内核中**，**对外提供一致的接口**。
@@ -203,7 +207,7 @@ int open(const char *pathname, int flags, mode_t mode);
 
 当用户使用fd与内核交互时，内核可以用fd从fdt->fd[fd]中得到内部管理文件的结构struct file。
 
-## 1.3 Creat简介
+## 1.3 creat简介
 
 creat函数用于创建一个新文件，其等价于open（pathname，O_WRONLY|O_CREAT|O_TRUNC，mode）。APUE介绍了引入creat的原因：由于历史原因，早期的Unix版本中，open的第二个参数只能是0、1或者2。这样就没有办法打开一个不存在的文件。因此，一个独立系统调用creat被引入，用于创建新文件。现在的open函数，通过使用O_CREAT和O_TRUNC选项，可以实现creat的功能，因此creat已经不是必要的了。
 
@@ -211,7 +215,7 @@ creat无非是open的一种封装实现。
 
 ![image-20200103100027091](/home/liutao/linux_imgs/image-20200103100027091.png)
 
-## 1.4 Close
+## 1.4 close
 
 close用于关闭文件描述符。而文件描述符可以是普通文件，也可以是设备，还可以是socket。在关闭时，VFS会根据不同的文件类型，执行不同的操作。
 
@@ -256,3 +260,258 @@ lsof -p PID # 从/proc/PID/fd中也可以得到类似的结果
 ## 1.5 文件偏移
 
 文件偏移是基于某个打开文件来说的，一般情况下，读写操作都会从当前的偏移位置开始读写（所以read和write都没有显式地传入偏移量），并且在读写结束后更新偏移量
+
+lseek的原型如下：
+
+```c
+off_t lseek(int fd, off_t offset, int whence);
+// 将fd的文件偏移量设置为以whence为起点，偏移为offset的位置
+```
+
+whence:
+
+* SEEK_SET：文件的起始位置
+* SEEK_CUR：文件的当前位置
+* SEEK_END：文件的末尾
+
+而offset的取值正负均可。lseek执行成功后，会返回新的文件偏移量。
+
+#### lseek的返回值
+
+当lseek执行成功时，它会返回最终**以文件起始位置为起点的偏移位置**。如果**出错，则返回-1**，同时errno被设置为对应的错误值。
+
+> 对于普通文件来说，lseek都是返回非负的整数，但是对于某些设备文件来说，是允许返回负的偏移量。因此要想判断lseek是否真正出错，必须在调用lseek前将errno重置为0，然后再调用lseek，同时检查返回值是否为-1及errno的值。只有当两个同时成立时，才表明lseek真正出错了。
+
+## 1.6 读取文件
+
+read的函数原型如下：
+
+```c
+size_t read(int fd, void *buf, size_t cout);
+```
+
+read尝试从fd中**读取count个字节到buf中**，并**返回成功读取的字节数**，同时将**文件偏移向前移动相同的字节数**。**返回0的时候则表示已经到了“文件尾**”。read还有可能读取比count小的字节数。使用read进行数据读取时，要注意正确地处理错误，也是说read返回-1时，如果errno为EAGAIN、EWOULDBLOCK或EINTR，一般情况下都不能将其视为错误。因为前两者是由于当前fd为非阻塞且没有可读数据时返回的，后者是由于read被信号中断所造成的。这两种情况基本上都可以视为正常情况。
+
+#### read源码
+
+![image-20200103230415426](/home/liutao/linux_imgs/image-20200103230415426.png)
+
+再进入vfs_read
+
+## 1.7 写入文件
+
+Linux中写入文件操作，最常用的就是write函数，其原型如下：
+
+```c
+size_t write(int fd, const void *buf, size_t count);
+```
+
+write尝试从buf指向的地址，写入count个字节到文件描述符fd中，并返回成功写入的字节数，同时将文件偏移向前移动相同的字节数。write有可能写入比指定count少的字节数。
+
+#### wirte源码
+
+write的源码与read的很相似，位于read_write.c中，代码如下：
+
+![image-20200103230649553](/home/liutao/linux_imgs/image-20200103230649553.png)
+
+进入vfs_write，代码如下：
+
+![image-20200103230916938](/home/liutao/linux_imgs/image-20200103230916938.png)
+
+![image-20200103230945351](/home/liutao/linux_imgs/image-20200103230945351.png)
+
+
+
+文件的**读写操作都是从当前文件的偏移处开始的**。这个文件偏移量保存在文件表中，而每个进程都有一个文件表。那么当多个进程同时写一个文件时，即使对write进行了锁保护，在进行串行写操作时，文件依然不可避免地会被写乱。根本原因就在于**文件偏移量是进程级别**的。
+
+当使用O_APPEND以追加的形式来打开文件时，每次写操作都会先定位到文件末尾，然后再执行写操作。Linux下大多数文件系统都是调用generic_file_aio_write来实现写操作的。在generic_file_aio_write中，有如下代码：
+
+![image-20200104145519325](/home/liutao/linux_imgs/image-20200104145519325.png)
+
+使用mutex_lock对该文件对应的inode进行保护，然后调用__generic_file_aio_write->generic_write_check
+
+![image-20200104145639218](/home/liutao/linux_imgs/image-20200104145639218.png)
+
+如果发现文件是以追加方式打开的，则将从inode中读取到的最新文件大小作为偏移量，然后通过__generic_file_aio_write再进行写操作，这样就能保证写操作是在文件末尾追加的。
+
+使用O_APPEND可以实现在文件的末尾原子追加新数据，Linux还提供**pread和pwrite从指定偏移位置读取或写入数据**。
+
+这就是它与read的主要区别。**pread不会从文件表中获取当前偏移，而是直接使用用户传递的偏移量，并且在读取完毕后，不会更改当前文件的偏移量**。
+
+## 1.8文件数据的同步
+
+为了提高性能，**操作系统会对文件的I/O操作进行缓存处理**。对于读操作，如果要读取的内容已经存在于文件缓存中，就直接读取文件缓存。**对于写操作，会先将修改提交到文件缓存中，在合适的时机或者过一段时间后，操作系统才会将改动提交到磁盘上**。
+
+Linux提供了三种同步函数：
+
+```c
+void sync(void); // Linux的sync是阻塞调用
+/* fsync只同步fd指定的文件，并且直到同步完成才返回
+fsync不仅同步数据，还会同步所有被修改过的文件元数据
+*/
+int fsync(int fd);
+// 只同步文件的实际数据内容，不会影响后面数据操作的元数据
+int fdatasync(int fd);
+```
+
+> sync、fsync和fdatasync只能保证Linux内核对文件的缓冲被冲刷了，并不能保证数据被真正写到磁盘上，因为磁盘也有自己的缓存。
+
+## 1.9 文件的元数据
+
+什么是文件的元数据呢？其包括**文件的访问权限**、**上次访问的时间戳**、**所有者**、**所有组**、**文件大小**等信息。
+
+#### 获取文件的元数据
+
+Linux提供了三种获取文件信息的API：
+
+```c
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+int stat(const char *path, struct stat *buf);
+int fstat(int fd, struct stat *buf);
+int lstat(const char *path, struct stat *buf);
+```
+
+区别在于**stat得到路径path所指定的文件基本信息**，**fstat得到文件描述符fd指定文件的基本信息**，而**lstat与stat则基本相同，只有当path是一个链接文件时，lstat得到的是链接文件自己本身的基本信息**而不是其指向文件的信息。
+
+struct stat的结构如下：
+
+![image-20200104152657645](/home/liutao/linux_imgs/image-20200104152657645.png)
+
+需要注意的是，**st_mode，其不仅仅是注释所说的“protection”，即权限管理，同时也用于表示文件类型，比如是普通文件还是目录**。
+
+所有的**文件元数据均保存在inode中**，而inode是Linux也是所有类Unix文件系统中的一个概念。这样的文件系统一般将**存储区域分为两类**，一类是保存文件对象的元信息数据，即**inode表**；另一类是**真正保存文件数据内容的块**，所有inode完全由文件系统来维护。但是Linux也可以挂载非类Unix的文件系统，这些文件系统本身没有inode的概念，怎么办？Linux为了让VFS有统一的处理流程和方法，就必须要求那些没有inode概念的文件系统，根据自己系统的特点——如何维护文件元数据，生成“虚拟的”inode以供Linux内核使用。
+
+#### 特殊的权限位
+
+* SUID：当文件设置SUID权限位时，就意味着无论是谁执行这个文件，都会拥有该文件所有者的权限。passwd命令正是利用这个特性，来允许普通用户修改自己的密码，因为只有root用户才有修改密码文件的权限。当普通用户执行passwd命令时，就具有了root权限，从而可以修改自己的密码。
+* SGID： SGID与SUID权限位类似，当设置该权限位时，就意味着无论是谁执行该文件，都会拥有该文件所有者所在组的权限。
+* Stricky位：Stricky位只有配置在目录上才有意义。当目录配置上sticky位时，其效果是即使所有的用户都拥有写权限和执行权限，该目录下的文件也只能被root或文件所有者删除。
+
+> 可以使用chmod来设置文件或目录的权限。
+
+## 1.10 文件截断
+
+API：
+
+```c
+#include <unistd.h>
+#include <sys/types.h>
+
+int truncate(const char *path, off_t length);
+int ftruncate(int fd, off_t lenght)；
+```
+
+区别在于，truncate截断的是路径path指定的文件，ftruncate截断的是fd引用的文件。
+
+注：“截断”给人的感觉是将文件变短，即将文件大小缩短至length长度。实际上，**length可以大于文件本身的大小**，这时文件长度将变为length的大小，**扩充的内容均被填充为0**。需要注意的是，**尽管ftruncate使用的是文件描述符，但是其并不会更新当前文件的偏移。**
+
+文件截断时允许指定比原有文件长度更长的值，但更常见的是指定的长度比原有长度短，这**主要用于防止文件内容混杂了旧内容的情况**。
+
+当不使用文件截断而导致新旧数据混杂在一起时，定位错误将更加困难。所以，在我们的日常编码中，在写入文件，**如果并不需要旧数据，那么在打开文件时就要强制截断文件**，来提高代码的健壮性。
+
+# 2. 标准IO
+
+## 2.1 stdin、stdout和stderr
+
+当Linux新建一个进程时，**会自动创建3个文件描述符0、1和2，分别对应标准输入、标准输出和错误输出。**C库中与文件描述符对应的是文件指针，与文件描述符0、1和2类似，我们可以直接使用文件指针stdin、stdout和stderr。
+
+#### 源码
+
+![image-20200104153946276](/home/liutao/linux_imgs/image-20200104153946276.png)
+
+![image-20200104154008595](/home/liutao/linux_imgs/image-20200104154008595.png)
+
+![image-20200104154029046](/home/liutao/linux_imgs/image-20200104154029046.png)
+
+DEF_STDFILE是一个宏定义，用于初始化C库中的FILE结构。这里_IO_2_1_stdin、_IO_2_1_stdout和_IO_2_1_stderr这三个FILE结构分别用于文件描述符0、1和2的初始化，这样C库的文件指针就与系统的文件描述符互相关联起来了。大家注意最后的标志位，stdin是不可写的，stdout是不可读的，而stderr不仅不可读，且没有缓存。
+
+stdin、stdout和stderr都是FILE类型的文件指针，是由C库静态定义的，直接与文件描述符0、1和2相关联，所以应用程序可以直接使用它们。
+
+#### IO缓存
+
+C库的I/O接口对文件I/O进行了封装，为了提高性能，其引入了缓存机制，共有三种缓存机制：全缓存、行缓存及无缓存。
+
+* 全缓存：一般用于访问真正的磁盘文件。C库会为文件访问申请一块内存，只有当文件内容将缓存填满或执行冲刷函数flush时，C库才会将缓存内容写入内核中。
+* 行缓存：一般用于访问终端。当遇到一个换行符时，就会引发真正的I/O操作。需要注意的是，C库的行缓存也是固定大小的。因此，当缓存已满，即使没有换行符时也会引发I/O操作。
+* 无缓存：C库没有进行任何的缓存。任何C库的I/O调用都会引发实际的I/O操作。
+
+#### fopen和open 的标志位
+
+![image-20200104163311834](/home/liutao/linux_imgs/image-20200104163311834.png)
+
+![image-20200104163342010](/home/liutao/linux_imgs/image-20200104163342010.png)
+
+## 2.2 fdopen与fileno
+
+Linux提供了文件描述符，而C库又提供了文件流。在平时的工作中，有时候需要在两者之间进行切换，因此C库提供了两个API：
+
+```c
+#include <stdio.h>
+// 从文件描述符fd生成一个文件流FILE
+// 创建一个新的文件流FILE，并建立文件流FILE与描述符的对应关系
+FILE *fdopen(int fd, const char *mode);
+
+// 从文件流FILE得到对应的文件描述符
+// 文件流FILE保存了文件描述符的值。当从文件流转换到文件描述符时，可以直接通过当前FILE保存的值_fileno得到fd。
+int fileno(FILE *stream);
+```
+
+因此无论是fdopen还是fileno，关闭文件时，都要使用fclose来关闭文件，而不是用close。因为只有采用此方式，fclose作为C库函数，才会释放文件流FILE占用的内存。
+
+## 2.3 ferror的返回值
+
+ferror用于告诉用户C库的文件流FILE是否有错误发生。当有错误发生时，ferror返回非零值，反之则返回0。
+
+返回值有两种：
+
+* 当文件流FILE* fp非法时，返回EOF（-1）。
+* 当文件流FILE* fp前面的操作发生错误时，返回1。
+
+#### 源码
+
+![image-20200104163959337](/home/liutao/linux_imgs/image-20200104163959337.png)
+
+![image-20200104164033100](/home/liutao/linux_imgs/image-20200104164033100.png)
+
+由于文件流的错误只是使用一个标志位_IO_ERR_SEEN来表示的，因此ferror的返回值就不可能针对不同的错误返回不同的值了。
+
+#### clearerr
+
+ferror用于检测文件流是否有错误发生，而clearerr用于清除文件流的文件结束位和错误位。
+
+当文件流读到文件尾时，文件流会被设置上EOF标志。如果不使用clearerr清除EOF标志，即使有新的数据，也无法读取成功。
+
+## 2.4 fgetc和getc
+
+接口：
+
+```c
+#include <stdio.h>
+
+int fgetc(FILE *stream);
+int getc(FILE *stream);
+```
+
+注意：**两者的返回值都是int类型**。
+
+为什么要用int类型作为返回值呢？因为当文件流读到文件尾时，需要返回EOF值。C99标准中规定了EOF为一个int类型的负数常量，并没有规定具体的值。
+
+## 2.5 fread和fwrite
+
+接口：
+
+```c
+#include <stdio.h>
+size_t fread(void *ptr, size_t size, size_t nmemb, FILE *stream);
+size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream);
+```
+
+这两个函数原型很容易让人产生误解。当看到返回值类型为size_t时，人们很有可能理解为fread和fwrite会返回成功读取或写入的字节数，然而实际上其返回的是成功读取或写入的个数，即有多少个size大小的对象被成功读取或写入了。而参数nmemb则用于指示fread或fwrite要执行的对象个数。
+
+# 3. 进程环境
+
+进程是操作系统运行程序的一个实例，也是操作系统分配资源的单位。在Linux环境中，每个进程都有独立的进程空间，以便对不同的进程进行隔离，使之不会互相影响。深入理解Linux下的进程环境，可以帮助我们写出更健壮的代码。
+
